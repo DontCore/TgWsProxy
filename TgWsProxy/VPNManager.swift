@@ -27,7 +27,7 @@ final class VPNManager: ObservableObject {
                 self.lastError = "Загрузка профилей: \(error.localizedDescription)"
             }
             if let existing = (managers ?? []).compactMap({ $0 as? NETunnelProviderManager })
-                .first(where: { $0.providerConfiguration?.providerBundleIdentifier == Self.extensionBundleId }) {
+                .first(where: { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.extensionBundleId }) {
                 self.manager = existing
                 self.status = existing.connection.status
             } else {
