@@ -40,6 +40,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         // Статистика и лог живут в SharedStore — приложению ничего пересылать не нужно.
-        completionHandler(nil)
+        completionHandler?(nil)
     }
 }
