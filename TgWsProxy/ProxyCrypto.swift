@@ -14,7 +14,8 @@ final class AESCTR {
         let status = key.withUnsafeBufferPointer { keyBuf in
             iv.withUnsafeBufferPointer { ivBuf in
                 CCCryptorCreateWithMode(
-                    kCCEncrypt, kCCModeCTR, kCCAlgorithmAES, ccNoPadding,
+                    CCOperation(kCCEncrypt), CCMode(kCCModeCTR),
+                    CCAlgorithm(kCCAlgorithmAES), CCPadding(ccNoPadding),
                     ivBuf.baseAddress, keyBuf.baseAddress, key.count,
                     nil, 0, 0, 0, &ref)
             }

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 /// Локальный MTProto-прокси на 127.0.0.1:1443 с мостом в WebSocket Telegram.
 /// Порт _handle_client/_run из tg_ws_proxy.py (MVP: без FakeTLS, cf_h2 и пулов).
@@ -111,7 +112,15 @@ final class ProxyServer {
 
 /// Один клиент Telegram: handshake → (WS мост | TCP-фолбэк) → ре-шифрование.
 /// Порт _handle_client, do_fallback и bridge_ws_reencrypt.
-final class ClientBridge {
+final class ClientBridge: Hashable {
+    static func == (lhs: ClientBridge, rhs: ClientBridge) -> Bool {
+        lhs === rhs
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(self))
+    }
+
     var onFinished: (() -> Void)?
 
     private let conn: NWConnection

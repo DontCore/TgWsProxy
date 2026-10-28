@@ -17,7 +17,7 @@ final class WsUpstream {
     init(domain: String, path: String, queue: DispatchQueue) {
         let tls = NWProtocolTLS.Options()
         let wsOptions = NWProtocolWebSocket.Options()
-        wsOptions.subprotocols = ["binary"]
+        wsOptions.setSubprotocols(["binary"])
         wsOptions.autoReplyPing = true
 
         let params = NWParameters(tls: tls)
