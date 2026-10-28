@@ -1,0 +1,7 @@
+*.xcodeproj
+DerivedData/
+build/
+*.ipa
+Payload/
+.DS_Store
+__pycache__/
