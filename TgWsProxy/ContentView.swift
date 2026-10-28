@@ -37,30 +37,33 @@ struct ContentView: View {
                 } header: {
                     Text("Фоновый режим (VPN-профиль)")
                 } footer: {
-                    Text("Туннель держит прокси живым круглосуточно. Реальные маршруты не перехватываются — в туннеле только фиктивная подсеть, работает исключительно Telegram через его прокси. При первом включении iOS попросит разрешить VPN-профиль.")
+                    Text("Туннель держит прокси живым круглосуточно, реальный трафик не перехватывается. Требует энтайтмент Network Extension — на бесплатной подписи iOS отвечает «permission denied» (так и задумано Apple): тогда пользуйся режимом 24/7 ниже или платным аккаунтом разработчика.")
                 }
 
                 Section {
                     Button {
                         if localRunning {
                             ProxyServer.shared.stop()
+                            BackgroundKeepAlive.shared.stop()
+                            UIApplication.shared.isIdleTimerDisabled = false
                         } else {
                             ProxyServer.shared.start()
+                            BackgroundKeepAlive.shared.start()
+                            UIApplication.shared.isIdleTimerDisabled = true
                         }
                     } label: {
-                        Label(localRunning ? "Остановить локальный прокси" : "Запустить локальный прокси",
-                              systemImage: "play.circle")
+                        Label(localRunning ? "Остановить режим 24/7" : "Запустить режим 24/7",
+                              systemImage: localRunning ? "stop.circle" : "infinity.circle")
                     }
-                    .disabled(vpn.status == .connected)
                     HStack {
                         Text("Локальный режим")
                         Spacer()
                         Text(localStatus).foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("Резервный режим (приложение открыто)")
+                    Text("Режим 24/7 (без VPN)")
                 } footer: {
-                    Text("Если VPN-профиль не подписался на твоём аккаунте — прокси может работать прямо в приложении, пока оно на экране.")
+                    Text("Играет неслышимую тишину, чтобы iOS не замораживала приложение — прокси живёт круглосуточно, экран можно блокировать. Тратит немного батареи. Без VPN и энтайтментов — работает на бесплатной подписи.")
                 }
 
                 Section("Подключить Telegram") {
