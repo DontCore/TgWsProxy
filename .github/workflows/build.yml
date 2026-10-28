@@ -12,8 +12,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen and ldid
+        run: brew install xcodegen ldid
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -32,11 +32,13 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build 2>&1 | tail -n 80
 
-      - name: Package IPA
+      - name: Package IPA (embed entitlements via ldid)
         run: |
           mkdir -p Payload
           cp -R "build/Build/Products/Release-iphoneos/TgWsProxy.app" Payload/
-          ls -la Payload/TgWsProxy.app
+          ls -la Payload/TgWsProxy.app Payload/TgWsProxy.app/PlugIns
+          ldid -SPacketTunnel/PacketTunnel.entitlements "Payload/TgWsProxy.app/PlugIns/PacketTunnel.appex/PacketTunnel"
+          ldid -STgWsProxy/TgWsProxy.entitlements "Payload/TgWsProxy.app/TgWsProxy"
           zip -r -q TgWsProxy-unsigned.ipa Payload
 
       - name: Upload artifact

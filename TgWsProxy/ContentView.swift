@@ -1,15 +1,12 @@
 import SwiftUI
 import UIKit
+import NetworkExtension
 
 struct ContentView: View {
-    @State private var running = false
-    @State private var statusText = ""
-    @State private var total = 0
-    @State private var active = 0
-    @State private var wsCount = 0
-    @State private var fallbackCount = 0
-    @State private var bytesUp = 0
-    @State private var bytesDown = 0
+    @StateObject private var vpn = VPNManager.shared
+    @State private var localRunning = false
+    @State private var localStatus = ""
+    @State private var stats: [String: Int] = [:]
     @State private var logLines: [String] = []
     @State private var linkCopied = false
 
@@ -20,37 +17,50 @@ struct ContentView: View {
             Form {
                 Section {
                     Button {
-                        if running {
+                        vpn.toggle()
+                    } label: {
+                        Label(vpn.status == .connected ? "Выключить VPN" : "Включить VPN (фон 24/7)",
+                              systemImage: vpn.status == .connected ? "stop.circle.fill" : "bolt.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(vpn.status == .connected ? .red : .green)
+
+                    HStack {
+                        Text("VPN")
+                        Spacer()
+                        Text(vpn.statusText).foregroundStyle(.secondary)
+                    }
+                    if let error = vpn.lastError {
+                        Text(error).font(.footnote).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Фоновый режим (VPN-профиль)")
+                } footer: {
+                    Text("Туннель держит прокси живым круглосуточно. Реальные маршруты не перехватываются — в туннеле только фиктивная подсеть, работает исключительно Telegram через его прокси. При первом включении iOS попросит разрешить VPN-профиль.")
+                }
+
+                Section {
+                    Button {
+                        if localRunning {
                             ProxyServer.shared.stop()
                         } else {
                             ProxyServer.shared.start()
                         }
                     } label: {
-                        Label(running ? "Остановить прокси" : "Запустить прокси",
-                              systemImage: running ? "stop.circle.fill" : "play.circle.fill")
-                            .frame(maxWidth: .infinity)
+                        Label(localRunning ? "Остановить локальный прокси" : "Запустить локальный прокси",
+                              systemImage: "play.circle")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(running ? .red : .green)
-
+                    .disabled(vpn.status == .connected)
                     HStack {
-                        Text("Статус")
+                        Text("Локальный режим")
                         Spacer()
-                        Text(statusText).foregroundStyle(.secondary)
+                        Text(localStatus).foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("Локальный MTProto-прокси")
+                    Text("Резервный режим (приложение открыто)")
                 } footer: {
-                    Text("Пока приложение на экране. MVP без фоновой работы: Network Extension (VPN-профиль) — следующий этап.")
-                }
-
-                Section("Статистика") {
-                    statRow("Активных подключений", "\(active)")
-                    statRow("Всего подключений", "\(total)")
-                    statRow("Через WebSocket", "\(wsCount)")
-                    statRow("Через TCP-фолбэк", "\(fallbackCount)")
-                    statRow("Отдано", ProxyStats.shared.humanBytes(bytesUp))
-                    statRow("Получено", ProxyStats.shared.humanBytes(bytesDown))
+                    Text("Если VPN-профиль не подписался на твоём аккаунте — прокси может работать прямо в приложении, пока оно на экране.")
                 }
 
                 Section("Подключить Telegram") {
@@ -68,9 +78,18 @@ struct ContentView: View {
                     } label: {
                         Label(linkCopied ? "Скопировано!" : "Скопировать ссылку прокси", systemImage: "doc.on.doc")
                     }
-                    Text("Нажми «Открыть в Telegram» и подтверди прокси — Telegram подключится к 127.0.0.1 напрямую, без внешних серверов.")
+                    Text("Telegram должен использовать прокси 127.0.0.1:\(ProxyConst.listenPort) — ссылка добавляет его автоматически.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Статистика") {
+                    statRow("Активных подключений", "\(stats["active"] ?? 0)")
+                    statRow("Всего подключений", "\(stats["total"] ?? 0)")
+                    statRow("Через WebSocket", "\(stats["ws"] ?? 0)")
+                    statRow("Через TCP-фолбэк", "\(stats["fallback"] ?? 0)")
+                    statRow("Отдано", ProxyStats.shared.humanBytes(stats["up"] ?? 0))
+                    statRow("Получено", ProxyStats.shared.humanBytes(stats["down"] ?? 0))
                 }
 
                 Section {
@@ -89,21 +108,16 @@ struct ContentView: View {
                     }
                     .frame(height: 150)
                 } header: {
-                    Text("Лог (последние события)")
-                }
-
-                Section {
-                    Text("Трафик Telegram идёт в WebSocket-эндпоинты веб-клиента Telegram (kws*.web.telegram.org) — для провайдера это обычный веб-телеграм. Порт ядра tg-ws-proxy (Flowseal, MIT).")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Как это работает")
+                    Text("Лог (VPN + прокси)")
                 }
             }
             .navigationTitle("TgWsProxy")
         }
         .onReceive(timer) { _ in refresh() }
-        .onAppear { refresh() }
+        .onAppear {
+            vpn.loadOrCreate()
+            refresh()
+        }
     }
 
     private func statRow(_ title: String, _ value: String) -> some View {
@@ -115,15 +129,9 @@ struct ContentView: View {
     }
 
     private func refresh() {
-        running = ProxyServer.shared.isRunning
-        statusText = ProxyServer.shared.statusText
-        let s = ProxyStats.shared
-        total = s.connectionsTotal
-        active = s.connectionsActive
-        wsCount = s.connectionsWs
-        fallbackCount = s.connectionsFallback
-        bytesUp = s.bytesUp
-        bytesDown = s.bytesDown
-        logLines = EventLog.shared.snapshot()
+        localRunning = ProxyServer.shared.isRunning
+        localStatus = ProxyServer.shared.statusText
+        stats = SharedStore.defaults.dictionary(forKey: "stats") as? [String: Int] ?? [:]
+        logLines = SharedStore.defaults.stringArray(forKey: "eventLog") ?? []
     }
 }

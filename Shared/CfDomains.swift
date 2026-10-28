@@ -94,7 +94,9 @@ final class EventLog {
         lock.lock()
         lines.append(stamped)
         if lines.count > 60 { lines.removeFirst(lines.count - 60) }
+        let snapshot = lines
         lock.unlock()
+        SharedStore.defaults.set(snapshot, forKey: "eventLog")
     }
 
     func snapshot() -> [String] {

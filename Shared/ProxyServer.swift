@@ -1,19 +1,19 @@
 import Foundation
 import Network
-import UIKit
 
 /// Локальный MTProto-прокси на 127.0.0.1:1443 с мостом в WebSocket Telegram.
-/// Порт _handle_client/_run из tg_ws_proxy.py (MVP: без FakeTLS, cf_h2 и пулов).
+/// Работает и в приложении (локальный режим), и внутри Packet Tunnel extension (фон).
 final class ProxyServer {
     static let shared = ProxyServer()
 
     static let proxySecretHex: String = {
-        let saved = UserDefaults.standard.string(forKey: "proxySecret")
+        let defaults = SharedStore.defaults
+        let saved = defaults.string(forKey: "proxySecret")
         if let saved = saved, saved.count == 32, saved.allSatisfy({ $0.isHexDigit }) {
             return saved.lowercased()
         }
         let generated = MTProto.randomBytes(16).map { String(format: "%02x", $0) }.joined()
-        UserDefaults.standard.set(generated, forKey: "proxySecret")
+        defaults.set(generated, forKey: "proxySecret")
         return generated
     }()
 
@@ -103,8 +103,8 @@ final class ProxyServer {
     private func setIsRunning(_ running: Bool, status: String) {
         isRunning = running
         statusText = status
+        SharedStore.defaults.set(status, forKey: "listenerStatus")
         DispatchQueue.main.async {
-            UIApplication.shared.isIdleTimerDisabled = running
             self.onStateChanged?()
         }
     }

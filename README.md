@@ -1,34 +1,43 @@
 # TgWsProxy (iOS)
 
-Порт ядра [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (Flowseal, MIT) на iOS/Swift: **локальный MTProto-прокси** для Telegram прямо на телефоне. Telegram подключается к `127.0.0.1:1443` как к обычному MTProto-прокси, а приложение перекладывает трафик в TLS-WebSocket эндпоинты веб-клиента Telegram (`kws{dc}.web.telegram.org/apiws`) — для провайдера это выглядит как обычный веб-телеграм. Внешний сервер не нужен, всё работает на устройстве.
+Порт ядра [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (Flowseal, MIT) на iOS/Swift: **локальный MTProto-прокси** для Telegram прямо на телефоне, работающий в фоне через **VPN-профиль (Packet Tunnel)**, который обслуживает только Telegram. Telegram подключается к `127.0.0.1:1443` как к обычному MTProto-прокси, а прокси перекладывает трафик в TLS-WebSocket эндпоинты веб-клиента Telegram (`kws{dc}.web.telegram.org/apiws`), с Cloudflare-фронтингом при блокировках — ровно как на ПК. Внешний сервер не нужен, всё работает на устройстве.
 
-## Что внутри (порт ядра)
+## Как это работает
 
-| Модуль tg-ws-proxy | Swift-порт |
-|---|---|
-| `_try_handshake` (разбор обфусцированного init, AES-CTR + SHA256(prekey+secret)) | `MTProto.tryHandshake` |
-| `_generate_relay_init` (свой init для апстрима) | `MTProto.generateRelayInit` |
-| `_build_crypto_ctx` / `CryptoCtx` (4 контекста ре-шифрования) | `MTProto.buildCryptoBridge` / `CryptoBridge` |
-| `MsgSplitter` (нарезка потока в MTProto-пакеты для WS-фреймов) | `MsgSplitter` |
-| `RawWebSocket` → заменён на родной `NWProtocolWebSocket` | `WsUpstream` |
-| `_tcp_fallback` (прямой TCP к DC) | `TcpUpstream` |
-| `_handle_client` / `bridge_ws_reencrypt` | `ClientBridge` |
+```
+Telegram iOS ──► 127.0.0.1:1443 (MTProto-прокси)      ← внутри VPN-процесса, живёт 24/7
+                        │
+                        ▼  WS / Cloudflare-фронтинг
+             kws{dc}.web.telegram.org / kws{dc}.{cf-домен}
+```
 
-Крипта: CommonCrypto (AES-CTR) + CryptoKit (SHA256). MVP поддерживает транспорты abridged / intermediate / padded-intermediate (`dd`-секрет) и тестовые DC (10001+). Не портированы: FakeTLS, Cloudflare h2/worker фолбэки, пулы соединений — WS-путь для DC2/DC4 + TCP-фолбэк для остальных DC.
+- **VPN-профиль (Packet Tunnel)** — единственный легальный способ держать процесс живым в фоне. В туннель заводится только фиктивная подсеть 10.111.222.0/24: трафик остальных приложений не перехватывается и не тратится батарея, работает исключительно Telegram через его прокси. Значок «VPN» в статус-баре — обязательная плата за фон на iOS.
+- **CF-фолбэк** — если провайдер режет прямой WS (как выяснилось на ПК-логе), перебираются Cloudflare-домены `kws{dc}.{cf}` из списка Flowseal'а (авто-обновление), затем TCP-фолбэк в DC.
+- Ядро — порт tg_ws_proxy.py/bridge.py: handshake с секретом (AES-CTR), relay-init, 4 контекста ре-шифрования, MsgSplitter, мост в WS.
 
 ## Сборка без Mac
 
-1. Залей папку в публичный репозиторий GitHub → вкладка **Actions** → сборка «Build TgWsProxy IPA» → скачай артефакт `TgWsProxy-unsigned-ipa`.
-2. Установка на iPhone — как у GiveSharing: [Sideloadly](https://sideloadly.io) + обычный Apple ID (7 дней подписи), Режим разработчика включён.
+1. Залей папку в публичный репозиторий GitHub → **Actions** → «Build TgWsProxy IPA» → артефакт `TgWsProxy-unsigned-ipa` (энтайтменты VPN/App Group вшиваются в бинари через ldid при упаковке).
+2. Установка через [Sideloadly](https://sideloadly.io) + Apple ID.
+
+> **Важно про подпись:** VPN-расширению нужен энтайтмент Network Extension. Бесплатный Apple ID подписывает на 7 дней, и Sideloadly обычно переносит энтайтменты, но если iOS откажется поднимать VPN-профиль («не удалось добавить VPN») — это ограничение бесплатной подписи; поможет платный аккаунт разработчика. Локальный режим (без VPN) работает всегда.
 
 ## Использование
 
-1. Запусти TgWsProxy и нажми **«Запустить прокси»** (приложение должно оставаться открытым — экран не гаснет, пока прокси работает).
-2. Нажми **«Открыть в Telegram»** — Telegram предложит добавить прокси `127.0.0.1:1443` (секрет генерируется на телефоне). Либо скопируй ссылку и открой вручную.
-3. Готово — Telegram ходит через WebSocket веб-клиента.
+1. Открой TgWsProxy → **«Включить VPN»** → разреши профиль в системном окне. Значок «VPN» появится в статус-баре — теперь прокси живёт всегда, даже после перезагрузки (включи «Connect on Demand» в настройках VPN при желании).
+2. **«Открыть в Telegram»** — Telegram добавит прокси 127.0.0.1:1443 (секрет хранится на телефоне).
+3. Статистика и лог событий — в приложении; они обновляются из фонового процесса через App Group.
 
-## Ограничения MVP
+## Структура
 
-- **Работает только при открытом приложении.** iOS замораживает фоновые приложения — для 24/7 нужен Network Extension (Packet Tunnel Provider + VPN-профиль). Это следующий этап: то же протокольное ядро переносится в extension-процесс без изменений.
-- WS-мост работает для DC2/DC4 (как дефолт `--dc-ip` в оригинале); остальные DC — через прямой TCP-фолбэк.
-- FakeTLS-маскирование и CF-фолбэки не портированы (на localhost они и не нужны — DPI не видит локальную ногу).
+```
+TgWsProxy/
+├── Shared/            # протокольное ядро (используется приложением и расширением)
+│   ├── ProxyConstants.swift / ProxyCrypto.swift / MsgSplitter.swift
+│   ├── WsUpstream.swift (WS + TCP-апстримы) / CfDomains.swift (CF-фолбэк + EventLog)
+│   ├── ProxyServer.swift (listener + ClientBridge) / SharedStore.swift (App Group)
+├── PacketTunnel/      # Packet Tunnel Provider (фоновый процесс VPN)
+├── TgWsProxy/         # приложение: VPN-менеджер, UI, статистика
+└── .github/workflows/build.yml
+```
+
