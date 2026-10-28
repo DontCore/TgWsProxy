@@ -110,6 +110,11 @@ final class ProxyServer {
     }
 }
 
+struct WsTarget {
+    let host: String
+    let isCf: Bool
+}
+
 /// Один клиент Telegram: handshake → (WS мост | TCP-фолбэк) → ре-шифрование.
 /// Порт _handle_client, do_fallback и bridge_ws_reencrypt.
 final class ClientBridge: Hashable {
@@ -167,6 +172,7 @@ final class ClientBridge: Hashable {
 
     private func handleHandshake() {
         guard let hs = MTProto.tryHandshake(handshakeBuf, secret: secret) else {
+            EventLog.shared.add("handshake отклонён (секрет/транспорт)")
             finish() // неверный секрет или транспорт
             return
         }
@@ -179,27 +185,41 @@ final class ClientBridge: Hashable {
         }
         bridge = ctx
         splitter = MsgSplitter(proto: hs.protoInt)
+        EventLog.shared.add(String(format: "handshake ок: DC%d%@%@ proto=0x%08X",
+                                   hs.dcId, hs.isMedia ? " media" : "", hs.isTest ? " test" : "", hs.protoInt))
 
-        // WS-мост доступен только для DC из dcWsRedirect (как в оригинале)
+        // Порядок как на ПК: прямой WS (только DC из dc_redirects), затем CF-фронтинг, затем TCP.
+        var targets: [WsTarget] = []
         if ProxyConst.dcWsRedirect[hs.dcId] != nil {
-            tryWsDomain(domains: ProxyConst.wsDomains(dc: hs.dcId, isMedia: hs.isMedia),
-                        index: 0, path: hs.isTest ? ProxyConst.wsPathTest : ProxyConst.wsPath,
-                        relayInit: relayInit)
-        } else {
-            tcpFallback(hs: hs, relayInit: relayInit)
+            for domain in ProxyConst.wsDomains(dc: hs.dcId, isMedia: hs.isMedia) {
+                targets.append(WsTarget(host: domain, isCf: false))
+            }
         }
+        for cf in CfDomains.shared.domainsFor(dc: hs.dcId) {
+            let d = hs.dcId == 203 ? 2 : hs.dcId
+            targets.append(WsTarget(host: "kws\(d).\(cf)", isCf: true))
+        }
+        guard !targets.isEmpty else {
+            tcpFallback(hs: hs, relayInit: relayInit)
+            return
+        }
+        tryWsTarget(targets: targets, index: 0, path: hs.isTest ? ProxyConst.wsPathTest : ProxyConst.wsPath,
+                    relayInit: relayInit, dcId: hs.dcId)
     }
 
     // MARK: - WS мост
 
-    private func tryWsDomain(domains: [String], index: Int, path: String, relayInit: [UInt8]) {
+    private func tryWsTarget(targets: [WsTarget], index: Int, path: String, relayInit: [UInt8], dcId: Int) {
         guard !finished else { return }
-        guard index < domains.count else {
-            tcpFallbackAny(dcUnknown: true, relayInit: relayInit)
+        guard index < targets.count else {
+            EventLog.shared.add("WS недоступен на всех доменах → TCP-фолбэк")
+            tcpFallbackAny(relayInit: relayInit)
             return
         }
+        let target = targets[index]
+        if target.isCf && index > 0 { EventLog.shared.add("WS → \(target.host)") }
 
-        let upstream = WsUpstream(domain: domains[index], path: path, queue: queue)
+        let upstream = WsUpstream(domain: target.host, path: path, queue: queue)
         ws = upstream
 
         let timeout = DispatchWorkItem { [weak upstream] in
@@ -207,11 +227,15 @@ final class ClientBridge: Hashable {
             upstream.close() // триггерит onFailure
         }
         timeoutWork = timeout
-        queue.asyncAfter(deadline: .now() + 8, execute: timeout)
+        queue.asyncAfter(deadline: .now() + (target.isCf ? 6 : 8), execute: timeout)
 
         upstream.onReady = { [weak self] in
             timeout.cancel()
             guard let self = self, !self.finished else { return }
+            if target.isCf {
+                CfDomains.shared.reportSuccess(dc: dcId, domain: target.host)
+            }
+            EventLog.shared.add("WS готов: \(target.host)")
             ProxyStats.shared.wsConnected()
             upstream.send(relayInit)
             self.usingSplitter = true
@@ -219,15 +243,19 @@ final class ClientBridge: Hashable {
             self.ws = upstream
             self.receiveFromClient()
             upstream.onMessage = { [weak self] data in
-                self?.deliverToClient(data, fromUpstream: true)
+                self?.deliverToClient(data)
             }
             upstream.onClosed = { [weak self] in self?.finish() }
         }
         upstream.onFailure = { [weak self] in
             timeout.cancel()
             guard let self = self, !self.finished else { return }
+            if target.isCf {
+                CfDomains.shared.reportFailure(domain: target.host)
+            }
+            EventLog.shared.add("WS fail: \(target.host)")
             self.ws = nil
-            self.tryWsDomain(domains: domains, index: index + 1, path: path, relayInit: relayInit)
+            self.tryWsTarget(targets: targets, index: index + 1, path: path, relayInit: relayInit, dcId: dcId)
         }
         upstream.onClosed = { [weak self] in self?.finish() }
     }
@@ -243,13 +271,13 @@ final class ClientBridge: Hashable {
         openTcp(ip: dst, relayInit: relayInit)
     }
 
-    private func tcpFallbackAny(dcUnknown: Bool, relayInit: [UInt8]) {
+    private func tcpFallbackAny(relayInit: [UInt8]) {
         openTcp(ip: ProxyConst.dcDefaultIPs[2]!, relayInit: relayInit)
-        _ = dcUnknown
     }
 
     private func openTcp(ip: String, relayInit: [UInt8]) {
         guard !finished else { return }
+        EventLog.shared.add("TCP фолбэк → \(ip):443")
         let upstream = TcpUpstream(ip: ip, port: ProxyConst.wsPort, queue: queue)
         tcp = upstream
 
@@ -270,13 +298,14 @@ final class ClientBridge: Hashable {
             self.tcp = upstream
             self.receiveFromClient()
             upstream.onMessage = { [weak self] data in
-                self?.deliverToClient(data, fromUpstream: true)
+                self?.deliverToClient(data)
             }
             upstream.onClosed = { [weak self] in self?.finish() }
         }
         upstream.onFailure = { [weak self] in
             timeout.cancel()
             guard let self = self, !self.finished else { return }
+            EventLog.shared.add("TCP фолбэк fail: \(ip)")
             self.finish()
         }
         upstream.onClosed = { [weak self] in self?.finish() }
@@ -317,14 +346,13 @@ final class ClientBridge: Hashable {
         }
     }
 
-    private func deliverToClient(_ data: [UInt8], fromUpstream: Bool) {
+    private func deliverToClient(_ data: [UInt8]) {
         guard !finished, let ctx = bridge else { return }
         ProxyStats.shared.addDown(data.count)
         let plain = ctx.tgDec.update(data)
         let out = ctx.cltEnc.update(plain)
         guard !out.isEmpty else { return }
         conn.send(content: Data(out), completion: .contentProcessed { _ in })
-        _ = fromUpstream
     }
 
     func finish() {

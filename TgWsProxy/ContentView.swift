@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var fallbackCount = 0
     @State private var bytesUp = 0
     @State private var bytesDown = 0
+    @State private var logLines: [String] = []
     @State private var linkCopied = false
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -73,6 +74,25 @@ struct ContentView: View {
                 }
 
                 Section {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            if logLines.isEmpty {
+                                Text("— пусто —").foregroundStyle(.secondary)
+                            }
+                            ForEach(Array(logLines.enumerated().reversed()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .frame(height: 150)
+                } header: {
+                    Text("Лог (последние события)")
+                }
+
+                Section {
                     Text("Трафик Telegram идёт в WebSocket-эндпоинты веб-клиента Telegram (kws*.web.telegram.org) — для провайдера это обычный веб-телеграм. Порт ядра tg-ws-proxy (Flowseal, MIT).")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -104,5 +124,6 @@ struct ContentView: View {
         fallbackCount = s.connectionsFallback
         bytesUp = s.bytesUp
         bytesDown = s.bytesDown
+        logLines = EventLog.shared.snapshot()
     }
 }
